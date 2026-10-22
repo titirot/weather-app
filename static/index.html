@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>SkyCast – Weather Forecast</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span aria-hidden="true">⛅</span> SkyCast</div>
+    <div class="account" id="account">
+      <span id="user-name" class="user-name"></span>
+      <a id="login-link" class="button primary" href="#" hidden>Sign in</a>
+      <a id="logout-link" class="button ghost" href="#" hidden>Sign out</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="main-column">
+      <form id="search-form" class="search" autocomplete="off" role="search">
+        <label for="city-input" class="visually-hidden">City</label>
+        <input id="city-input" name="city" type="search" maxlength="100" required
+               placeholder="Search a city, e.g. Tel Aviv, Stockholm, Tokyo">
+        <button type="submit" class="button primary">Get forecast</button>
+      </form>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+
+      <article id="current" class="card current" hidden>
+        <div class="current-head">
+          <div>
+            <h1 id="current-place"></h1>
+            <p id="current-time" class="muted"></p>
+          </div>
+          <button id="save-button" type="button" class="button primary" hidden>☆ Save forecast</button>
+        </div>
+        <div class="current-body">
+          <div class="current-icon" id="current-icon" aria-hidden="true"></div>
+          <div>
+            <div class="current-temp" id="current-temp"></div>
+            <div class="current-desc" id="current-desc"></div>
+          </div>
+          <dl class="current-details" id="current-details"></dl>
+        </div>
+      </article>
+
+      <section id="daily-section" hidden>
+        <h2>Next days</h2>
+        <div id="daily" class="daily" tabindex="0" role="region" aria-label="Daily forecasts"></div>
+      </section>
+
+      <section id="hourly-section" hidden>
+        <h2 id="hourly-title">Detailed 3-hour forecast</h2>
+        <div class="hourly-navigation">
+          <button id="hourly-prev" class="scroll-arrow" type="button" aria-label="Previous hours" aria-controls="hourly" disabled>&lt;</button>
+          <div id="hourly" class="hourly" tabindex="0" role="region" aria-labelledby="hourly-title"></div>
+          <button id="hourly-next" class="scroll-arrow" type="button" aria-label="Next hours" aria-controls="hourly" disabled>&gt;</button>
+        </div>
+      </section>
+    </section>
+
+    <aside class="side-column">
+      <section class="card">
+        <h2>My saved forecasts</h2>
+        <p id="favorites-hint" class="muted">Sign in to save forecasts and see them here.</p>
+        <ul id="favorites" class="favorites"></ul>
+      </section>
+
+      <section class="card" id="activity-card" hidden>
+        <details id="activity-details">
+          <summary>My activity</summary>
+          <ul id="activity" class="activity"></ul>
+        </details>
+      </section>
+
+    </aside>
+  </main>
+
+  <footer class="footer muted">
+    <p class="footer-credit">Weather data © OpenWeather</p>
+    <p class="privacy-note">
+          Searches are not stored. We only store your display name, the forecasts you
+          choose to save and a short activity history (kept up to 90 days). Weather data
+          is requested by our server, so your IP address is never sent to the weather provider.
+        </p>
+    <button id="delete-data" type="button" class="footer-action" hidden>Delete all my data</button>
+  </footer>
+</body>
+</html>

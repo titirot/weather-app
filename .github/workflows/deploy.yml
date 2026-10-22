@@ -1,0 +1,413 @@
+name: Weather application CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  BICEP_VERSION: v0.48.1
+  AZURE_CORE_OUTPUT: none
+  AZURE_CORE_ONLY_SHOW_ERRORS: 'true'
+  AZURE_CORE_COLLECT_TELEMETRY: 'false'
+
+jobs:
+  ci:
+    name: Tests, Bicep validation and release package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      release-sha256: ${{ steps.package.outputs.sha256 }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: weather_test
+          POSTGRES_USER: weather_ci
+          # Disposable CI database credential, NOT a production credential.
+          POSTGRES_PASSWORD: ci-only-disposable-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U weather_ci -d weather_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install application dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run unit and real PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgresql://weather_ci:ci-only-disposable-password@127.0.0.1:5432/weather_test?connect_timeout=5
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v
+          node --check static/app.js
+
+      - name: Install the pinned Bicep compiler
+        run: |
+          set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
+          "$HOME/.azure/bin/bicep" --version
+
+      - name: Compile Bicep, validate parameters and run ARM contract tests
+        shell: pwsh
+        run: |
+          ./infra/validate.ps1 -BicepCommand "$HOME/.azure/bin/bicep" -PythonCommand python
+
+      - name: Lint GitHub Actions workflow
+        run: |
+          set -euo pipefail
+          lint_dir="$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")"
+          version=1.7.12
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          curl --fail --silent --show-error --location --retry 3 "$base/$archive" --output "$lint_dir/$archive"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$base/actionlint_${version}_checksums.txt" --output "$lint_dir/checksums.txt"
+          (cd "$lint_dir" && sha256sum --check --ignore-missing checksums.txt)
+          tar -xzf "$lint_dir/$archive" -C "$lint_dir" actionlint
+          "$lint_dir/actionlint" -config-file .github/actionlint.yaml \
+            -shellcheck= -pyflakes= .github/workflows/deploy.yml
+
+      - name: Build the application-only deployment ZIP
+        id: package
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          files = [Path(name) for name in ("app.py", "auth.py", "storage.py", "requirements.txt")]
+          files += sorted(path for path in Path("static").rglob("*") if path.is_file())
+          if any(path.is_symlink() for path in files):
+              raise SystemExit("Release files must not be symbolic links.")
+          with ZipFile("weather.zip", "w", compression=ZIP_DEFLATED) as archive:
+              for path in files:
+                  archive.write(path, path.as_posix())
+          digest = hashlib.sha256(Path("weather.zip").read_bytes()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"sha256={digest}\n")
+          PY
+
+      - name: Store the tested release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: weather-${{ github.sha }}
+          path: weather.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy approved production release
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # An ephemeral, trusted Linux runner with private DB DNS/routing is required.
+    # NEVER run pull-request jobs on this runner.
+    runs-on: [self-hosted, linux, x64, azure-private]
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: ${{ steps.infrastructure.outputs.application-url }}
+    concurrency:
+      group: weather-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+      ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+      DATABASE_ADMIN_GROUP_OBJECT_ID: ${{ secrets.DATABASE_ADMIN_GROUP_OBJECT_ID }}
+      DATABASE_ADMIN_GROUP_NAME: ${{ secrets.DATABASE_ADMIN_GROUP_NAME }}
+      DATABASE_BOOTSTRAP_OBJECT_ID: ${{ secrets.AZURE_PRINCIPAL_OBJECT_ID }}
+      DATABASE_BOOTSTRAP_PRINCIPAL_NAME: ${{ secrets.AZURE_PRINCIPAL_NAME }}
+      RELEASE_RUNNER_IPV4: ${{ secrets.RELEASE_RUNNER_IPV4 }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+    steps:
+      - name: Check out the approved commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check secrets and runner prerequisites
+        run: |
+          set -euo pipefail
+          config_dir="$(mktemp -d "$RUNNER_TEMP/azure-weather.XXXXXX")"
+          echo "AZURE_CONFIG_DIR=$config_dir" >> "$GITHUB_ENV"
+          for tool in az python3 psql curl sha256sum; do
+            command -v "$tool" >/dev/null || { echo "::error::Missing runner tool: $tool"; exit 1; }
+          done
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import uuid
+
+          required = (
+              "AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
+              "AZURE_RESOURCE_GROUP", "ENTRA_CLIENT_ID", "ENTRA_CLIENT_SECRET",
+              "OPENWEATHER_API_KEY", "DATABASE_ADMIN_GROUP_OBJECT_ID",
+              "DATABASE_ADMIN_GROUP_NAME", "RELEASE_RUNNER_IPV4", "ALERT_EMAIL",
+              "DATABASE_BOOTSTRAP_OBJECT_ID", "DATABASE_BOOTSTRAP_PRINCIPAL_NAME",
+          )
+          missing = [name for name in required if not os.environ.get(name, "").strip()]
+          if missing:
+              raise SystemExit("Missing GitHub production secrets: " + ", ".join(missing))
+          for name in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
+                       "ENTRA_CLIENT_ID", "DATABASE_ADMIN_GROUP_OBJECT_ID",
+                       "DATABASE_BOOTSTRAP_OBJECT_ID"):
+              try:
+                  uuid.UUID(os.environ[name])
+              except ValueError:
+                  raise SystemExit(f"{name} must be a UUID.") from None
+          try:
+              ipaddress.IPv4Address(os.environ["RELEASE_RUNNER_IPV4"])
+          except ipaddress.AddressValueError:
+              raise SystemExit("RELEASE_RUNNER_IPV4 must be a single IPv4 address, without /32.") from None
+          PY
+
+      - name: Download the tested application
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: weather-${{ github.sha }}
+          path: ${{ runner.temp }}/weather-release-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Verify release checksum
+        env:
+          EXPECTED_SHA256: ${{ needs.ci.outputs.release-sha256 }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip"
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$release" | sha256sum --check --status
+
+      - name: Sign in to Azure using GitHub OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm the database bootstrap identity
+        run: |
+          set -euo pipefail
+          actual_oid="$(az ad sp show --id "$AZURE_CLIENT_ID" --query id --output tsv)"
+          test "${actual_oid,,}" = "${DATABASE_BOOTSTRAP_OBJECT_ID,,}" || {
+            echo "::error::AZURE_PRINCIPAL_OBJECT_ID must identify the OIDC deployment principal."
+            exit 1
+          }
+
+      - name: Validate against Azure and preview infrastructure changes
+        run: |
+          set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
+          az group show --name "$AZURE_RESOURCE_GROUP" --output none
+          az deployment group validate \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --parameters infra/main.bicepparam --output none
+          az deployment group what-if \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --parameters infra/main.bicepparam \
+            --result-format ResourceIdOnly --no-pretty-print --output json
+
+      - name: Deploy Azure infrastructure
+        id: infrastructure
+        run: |
+          set -euo pipefail
+          outputs="$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          az deployment group create \
+            --name "weather-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --parameters infra/main.bicepparam \
+            --query properties.outputs --output json > "$outputs"
+          python3 - "$outputs" <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.parse import urlparse
+
+          outputs = json.load(open(sys.argv[1], encoding="utf-8"))
+          names = {
+              "applicationUrl": "application-url",
+              "entraRedirectUri": "redirect-uri",
+              "webAppName": "web-app-name",
+              "postgresHost": "postgres-host",
+              "postgresBootstrapLogin": "postgres-bootstrap-login",
+              "runtimeDatabaseRole": "runtime-database-role",
+              "runtimePrincipalObjectId": "runtime-principal-object-id",
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as target:
+              for name, output_name in names.items():
+                  value = outputs[name]["value"]
+                  if not isinstance(value, str) or not value or any(c in value for c in "\r\n"):
+                      raise SystemExit(f"Invalid deployment output: {name}")
+                  target.write(f"{output_name}={value}\n")
+          url = urlparse(outputs["applicationUrl"]["value"])
+          if url.scheme != "https" or not url.hostname or not url.hostname.endswith(".azurefd.net"):
+              raise SystemExit("Unexpected Front Door URL.")
+          PY
+
+      - name: Configure the Entra callback without removing existing redirects
+        env:
+          REDIRECT_URI: ${{ steps.infrastructure.outputs.redirect-uri }}
+        run: |
+          set -euo pipefail
+          redirects="$RUNNER_TEMP/weather-redirects-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          az ad app show --id "$ENTRA_CLIENT_ID" --query web.redirectUris --output json > "$redirects"
+          redirect_list="$RUNNER_TEMP/weather-redirect-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.txt"
+          python3 - "$redirects" > "$redirect_list" <<'PY'
+          import json
+          import os
+          import sys
+          uris = json.load(open(sys.argv[1], encoding="utf-8")) or []
+          for uri in dict.fromkeys([*uris, os.environ["REDIRECT_URI"]]):
+              if not isinstance(uri, str) or "\n" in uri or "\r" in uri:
+                  raise SystemExit("Invalid Entra redirect URI.")
+              print(uri)
+          PY
+          mapfile -t uris < "$redirect_list"
+          test "${#uris[@]}" -gt 0
+          az ad app update --id "$ENTRA_CLIENT_ID" \
+            --enable-id-token-issuance true --web-redirect-uris "${uris[@]}" --output none
+
+      - name: Bootstrap the private PostgreSQL runtime role
+        env:
+          PGHOST: ${{ steps.infrastructure.outputs.postgres-host }}
+          PGUSER: ${{ steps.infrastructure.outputs.postgres-bootstrap-login }}
+          PGDATABASE: postgres
+          PGSSLMODE: verify-full
+          PGSSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
+          PGCONNECT_TIMEOUT: '10'
+          RUNTIME_ROLE: ${{ steps.infrastructure.outputs.runtime-database-role }}
+          RUNTIME_OBJECT_ID: ${{ steps.infrastructure.outputs.runtime-principal-object-id }}
+        run: |
+          set -euo pipefail
+          # Fail before token acquisition if private DNS/routing is missing.
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import socket
+          addresses = socket.getaddrinfo(os.environ["PGHOST"], 5432, type=socket.SOCK_STREAM)
+          if not addresses or any(not ipaddress.ip_address(a[4][0]).is_private for a in addresses):
+              raise SystemExit("PostgreSQL must resolve to private addresses on the release runner.")
+          with socket.create_connection((os.environ["PGHOST"], 5432), timeout=10):
+              pass
+          PY
+          token="$(az account get-access-token \
+            --resource https://ossrdbms-aad.database.windows.net \
+            --query accessToken --output tsv)"
+          test -n "$token"
+          echo "::add-mask::$token"
+          export PGPASSWORD="$token"
+          trap 'unset PGPASSWORD token' EXIT
+          psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+            --set=runtime_role="$RUNTIME_ROLE" --set=runtime_object_id="$RUNTIME_OBJECT_ID" \
+            --file=infra/bootstrap-database.sql
+
+      - name: Deploy the tested Python application using Entra authorization
+        env:
+          WEB_APP_NAME: ${{ steps.infrastructure.outputs.web-app-name }}
+        run: |
+          set -euo pipefail
+          az webapp deploy --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$WEB_APP_NAME" \
+            --src-path "$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip" \
+            --type zip --restart true --track-status true --output none
+
+      - name: Verify the public application and origin protection
+        env:
+          APPLICATION_URL: ${{ steps.infrastructure.outputs.application-url }}
+          WEB_APP_NAME: ${{ steps.infrastructure.outputs.web-app-name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import urlopen
+
+          base = os.environ["APPLICATION_URL"]
+          for attempt in range(30):
+              try:
+                  with urlopen(base + "/healthz", timeout=15) as response:
+                      if json.load(response) != {"status": "ok"}:
+                          raise ValueError("Unexpected health response")
+                  with urlopen(base + "/", timeout=15) as response:
+                      if b"SkyCast" not in response.read():
+                          raise ValueError("Application page not deployed")
+                  with urlopen(base + "/api/me", timeout=15) as response:
+                      me = json.load(response)
+                      if me.get("authenticated") is not False or me.get("auth_mode") != "easyauth":
+                          raise ValueError("Unsafe authentication configuration")
+                  with urlopen(base + "/api/weather?city=Stockholm,SE", timeout=45) as response:
+                      weather = json.load(response)
+                      if weather.get("provider") != "OpenWeather" or not weather.get("forecast", {}).get("items"):
+                          raise ValueError("Live weather check failed")
+                  break
+              except (HTTPError, URLError, TimeoutError, ValueError) as error:
+                  print(f"Readiness attempt {attempt + 1}/30 failed ({type(error).__name__}).")
+                  if attempt == 29:
+                      raise SystemExit("Application did not become ready; inspect Azure deployment diagnostics.") from None
+                  time.sleep(20)
+          for path in ("/api/favorites", "/api/activity"):
+              try:
+                  with urlopen(base + path, timeout=15):
+                      raise SystemExit("Personal API unexpectedly accessible without sign-in.")
+              except HTTPError as error:
+                  if error.code != 401:
+                      raise SystemExit("Unexpected personal API authorization response.") from None
+          PY
+          origin="$(az webapp show --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$WEB_APP_NAME" --query defaultHostName --output tsv)"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --connect-timeout 10 --max-time 30 "https://$origin/healthz")"
+          test "$status" = 403 || { echo "::error::Direct origin must return 403."; exit 1; }
+          printf '### Deployment verified\n\nApplication: %s\n\nCommit: `%s`\n' \
+            "$APPLICATION_URL" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clear Azure account state
+        if: always()
+        run: |
+          if command -v az >/dev/null; then
+            az logout
+            az account clear
+          fi
+
+      - name: Remove temporary release metadata
+        if: always()
+        run: |
+          rm -f -- \
+            "$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip" \
+            "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            "$RUNNER_TEMP/weather-redirects-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            "$RUNNER_TEMP/weather-redirect-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.txt"
