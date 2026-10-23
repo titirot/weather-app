@@ -269,8 +269,8 @@ below instead of performing these steps manually.
 ## GitHub Actions CI/CD
 
 The complete workflow is [deploy.yml](../.github/workflows/deploy.yml).
-The workflow is published to GitHub, but Actions remains disabled and no workflow
-deployment has been executed against Azure.
+The workflow is published to GitHub and Actions is enabled for CI. Production
+releases remain approval-gated; no full application deployment has completed.
 
 ### Trigger and release model
 
