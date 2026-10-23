@@ -10,9 +10,14 @@ param databaseHost string
 param databaseUser string
 param vaultName string
 param workspaceId string
-param frontDoorId string
+param frontDoorProfileName string
 param tenantId string
 param entraClientId string
+
+// Resolve only inside this module, after the parent has created the profile.
+resource edgeProfile 'Microsoft.Cdn/profiles@2025-06-01' existing = {
+  name: frontDoorProfileName
+}
 
 module plan 'br/public:avm/res/web/serverfarm:0.7.0' = {
   name: 'zone-redundant-plan'
@@ -64,7 +69,7 @@ module site 'br/public:avm/res/web/site:0.24.0' = {
           action: 'Allow'
           tag: 'ServiceTag'
           ipAddress: 'AzureFrontDoor.Backend'
-          headers: { 'x-azure-fdid': [frontDoorId] }
+          headers: { 'x-azure-fdid': [edgeProfile.properties.frontDoorId] }
         }
       ]
       scmIpSecurityRestrictionsUseMain: false

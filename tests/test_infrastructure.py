@@ -100,6 +100,10 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual([role["roleDefinitionIdOrName"] for role in roles], ["Key Vault Secrets User"])
 
     def test_web_ingress_authentication_and_tls(self):
+        self.assertFalse(any(r["type"] == "Microsoft.Cdn/profiles"
+                             for r in resources(self.template)))
+        self.assertIn("reference('frontDoor')",
+                      self.module_parameters("flask-web-application")["frontDoorProfileName"]["value"])
         web_resources = resources(self.module_template("flask-web-application"))
         site = next(r for r in web_resources if r.get("name") == "web-site")
         settings = site["properties"]["parameters"]
