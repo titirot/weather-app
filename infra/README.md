@@ -21,18 +21,17 @@ application works.
 | --- | --- | --- |
 | European hosting and competitive pricing | Sweden Central for regional resources; configurable European alternatives | P0v3 is offered and PostgreSQL HA/geo-backup capabilities were returned for this subscription. Current complete regional price comparison is still required; cheapest-region status is not proven. |
 | Global access and latency | Front Door global edge, TLS and Microsoft backbone to the European origin | Dynamic responses are deliberately not edge-cached. Measure latency from representative countries; one European origin cannot promise minimum latency everywhere. |
-| Prefer PaaS | App Service, managed PostgreSQL, Key Vault, Front Door and Azure Monitor | The private release runner is deployment tooling, not the application hosting tier. It is not yet provisioned. |
+| Prefer PaaS | App Service, managed PostgreSQL, Key Vault, Front Door and Azure Monitor | Hosted CI runs private bootstrap in a temporary App Service sharing existing capacity; no runner VM is needed. |
 | API, operations and PostgreSQL storage | Server-side OpenWeather calls, per-user preference/activity persistence and private database connectivity | Local tests cover application/storage behavior. Authenticated cloud save/read/delete and user isolation must pass after deployment. |
 | Cost/benefit | Two minimum web workers, bounded autoscale, managed services and bounded logging | HA database and Premium WAF have material fixed cost. Approve total monthly estimate and add a subscription budget/alerts; autoscale limits are not a spending cap. |
 | Privacy | Tenant/guest authentication, non-admin runtime identity, TLS, private DB/vault, no personal-response edge caching, data erasure and restricted logging | Confirm customer onboarding, contractual residency, retention/backup erasure process and secret rotation. No automatic GDPR compliance claim. |
 | High availability | Zone-redundant web plan and PostgreSQL standby, health probes, alerts and backups | Perform failover and restore drills and agree RTO/RPO. Cross-region automatic failover and zero-downtime release slots are not configured. |
 
-Initial deployment is not production acceptance. The deployment principal's
-Microsoft Graph consent remains pending tenant-admin action, and an online,
-trusted `azure-private` runner is required. Neither a complete secret-name list
-nor a passing Bicep build resolves those prerequisites. Never replace the runner
-with a public-database exception, bypass production approval, or silently reduce
-HA to force the first release through.
+Initial deployment is not production acceptance. An application owner manually
+registers the final sign-in callback; CI has no Graph permissions or sign-in app
+ownership. Neither a complete secret-name list nor a passing Bicep build proves
+customer sign-in or persistence. Never enable public database access, bypass
+production approval, or silently reduce HA to force a release through.
 
 The developer's API key has appeared in shared editor/chat context. Rotate it
 at the provider before production and replace both the local value and GitHub
@@ -200,9 +199,9 @@ below instead of performing these steps manually.
 3. Populate the environment variables referenced by `main.bicepparam`:
    `AZURE_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`,
    `OPENWEATHER_API_KEY`, `DATABASE_ADMIN_GROUP_OBJECT_ID`,
-   `DATABASE_ADMIN_GROUP_NAME`, `RELEASE_RUNNER_IPV4`, `ALERT_EMAIL`.
+   `DATABASE_ADMIN_GROUP_NAME`, `ALERT_EMAIL`.
    Use a password manager/secure interactive prompt, never commit a populated
-   parameters file. `RELEASE_RUNNER_IPV4` is a single IP, without `/32`.
+   parameters file.
    The deployment identity needs resource deployment and RBAC-assignment
    permissions. Entra registration administration is a separate permission.
 4. Validate and review a preview against the **existing** resource group:
@@ -223,40 +222,26 @@ below instead of performing these steps manually.
 5. Add the output `entraRedirectUri` to the registration's Web redirect URIs.
    Use only the Front Door URL for customer access. Confirm the real secret
    references resolve; allow for RBAC propagation before testing sign-in.
-6. Bootstrap the **new Azure database**, never the local Docker database.
-   Run `psql` as an authorized administrator-group member from a release runner
-   with private connectivity/DNS to the administration subnet (e.g. a controlled
-   runner there, or a correctly routed and NSG-authorized VPN). The template
-   creates that subnet, not a VM, VPN, runner or CI system. Default Cloud Shell
-   and a public laptop cannot reach this private database.
-
-   Set `PGHOST` to output `postgresHost`, `PGUSER` to output
-   `postgresAdminLogin`, `PGSSLMODE=verify-full`, and `PGSSLROOTCERT` to your
-   trusted CA bundle. Acquire an administrator Entra token:
+6. Save the deployment's `properties.outputs` object in a temporary local JSON
+   file (no credentials are output). Use the same release helper as CI:
 
    ```powershell
-   $env:PGPASSWORD = az account get-access-token --resource https://ossrdbms-aad.database.windows.net --query accessToken --output tsv
-   if ($LASTEXITCODE -ne 0) { throw 'Could not acquire the PostgreSQL token.' }
-   try {
-     psql --dbname=postgres --set=runtime_role=$runtimeDatabaseRole --set=runtime_object_id=$runtimePrincipalObjectId --file=.\infra\bootstrap-database.sql
-     if ($LASTEXITCODE -ne 0) { throw 'Database bootstrap failed.' }
-   } finally {
-     Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
-   }
+   python .\infra\release.py bootstrap --outputs $outputsPath
    ```
 
-   Set `$runtimeDatabaseRole` and `$runtimePrincipalObjectId` from the matching
-   deployment outputs. The script checks existing role mappings and fails on
-   unexpected or privileged roles. Azure-specific functions/grants must be
-   verified on the real server; they cannot be exercised by ordinary Docker PG.
+   This creates a temporary, separately identified App Service in the existing
+   plan and VNet integration subnet. It grants that identity database admin
+   access only during bootstrap, verifies the runtime grants, then deletes the
+   app and administrator assignment. The customer app is never an admin.
+   The same reviewed SQL is used by the helper and manual psql recovery.
+   Azure-specific functions/grants still require real cloud verification.
 7. Build a ZIP containing **only** the application release allowlist:
    `app.py`, `auth.py`, `storage.py`, `requirements.txt`, and `static`.
    Exclude `.env`, `.venv`, tests, local runner, infrastructure and cached files.
-   From the allowed release-runner IP, deploy with an up-to-date CLI and Entra
-   authorization (do not enable basic credentials to work around a failure):
+   Deploy with the release helper and Entra authorization:
 
    ```powershell
-   az webapp deploy --resource-group $resourceGroup --name $webAppName --src-path $releaseZip --type zip
+   python .\infra\release.py publish --outputs $outputsPath --archive $releaseZip
    ```
 
 8. Verify through Front Door: HTTPS redirect, `/healthz`, real weather,
@@ -287,7 +272,7 @@ releases remain approval-gated; no full application deployment has completed.
   restrict deployment branches to `main` **before pushing**. Merely naming an
   environment in YAML does not create its approval/branch protection rules.
 - The pipeline signs into Azure using short-lived GitHub OIDC tokens, validates
-  against Azure, runs `what-if`, deploys infrastructure, updates the Entra
+  against Azure, runs `what-if`, deploys infrastructure, reports the manual Entra
   callback, bootstraps PostgreSQL and deploys the Python ZIP. Deployments are
   serialized and are not cancelled midway by a later push.
 - The approval gate is before the entire deployment job, including `what-if`.
@@ -318,37 +303,29 @@ releases remain approval-gated; no full application deployment has completed.
      appropriately scoped equivalent) on the target resource group. Use
      constrained role-assignment permissions where feasible.
    No `AZURE_CLIENT_SECRET` or JSON publish profile is used.
-4. Create/select the separate **customer sign-in** Entra application. To update
-   its callback automatically, the deployment service principal needs Microsoft
-   Graph application permission `Application.ReadWrite.OwnedBy`, administrator
-   consent, and ownership of the sign-in application. It also needs permission
-   to read its own service-principal record for the identity preflight.
-   These are Entra permissions, distinct from Azure resource-group RBAC.
-5. The deployment principal is configured as an additional PostgreSQL Entra
-   administrator, while the human admin group remains available. Its object ID
-   must be the **Enterprise Application/service-principal object ID**, not its
-   application/client ID or app-registration object ID. This is deliberately a
-   privileged release identity, limited by OIDC/environment approval. The web
-   application's separate runtime identity is never made a database admin.
-   For manual-only deployment, the two bootstrap-principal parameters default
-   to empty and the existing human-group bootstrap still applies.
-6. Provision an isolated, preferably ephemeral **Linux x64 self-hosted runner**
-   with labels `self-hosted`, `linux`, `x64`, `azure-private`. Install current
-   Azure CLI (2.48.1 or later, preferably latest), Python 3, PostgreSQL client
-   with `psql`, CA certificates, curl, sha256sum and the runtime prerequisites
-   for GitHub Actions. It needs outbound access to GitHub, Azure/Entra, MCR and
-   the Bicep release download. Bicep is installed at its pinned version by CI/CD.
-7. That runner needs private DNS resolution and TCP 5432 access to the deployed
-   PostgreSQL server, plus a **stable public egress IPv4** allowed on SCM.
-   Use the administration subnet or a deliberately peered/routed management
-   network; add required NSG rules if its source is outside `10.42.3.0/27`.
-   Establish connectivity for the workload VNet before the database-bootstrap
-   step. The workflow does not provision a runner, VPN or VNet peering.
-   First-time runner/network provisioning is a separate platform prerequisite;
-   changing `runs-on` to `ubuntu-latest` will not solve private database access.
-   Restrict runner-group access to this repository and trusted release code;
-   never allow untrusted PR jobs to execute on this runner. Dispose of the runner
-   after each job so local Azure caches and source files do not persist.
+4. Create/select the separate **customer sign-in** Entra application. Its human
+   owner adds the exact Web callback from the deployment summary, preserving
+   existing redirects. The CI identity needs no Graph application permissions
+   and must not own this application. The previous pending Graph request and
+   deployment ownership were removed for this exercise.
+5. The template creates a separate bootstrap managed identity with no standing
+   database admin assignment. `release.py` temporarily grants that identity
+   administrator access, runs the private bootstrap app, and revokes access.
+   The deployment identity is not a PostgreSQL login; runtime is never an admin.
+6. Both CI and CD use disposable GitHub-hosted Ubuntu runners. App Service VNet
+   integration supplies private connectivity to code in the temporary app,
+   not to the hosted runner. No VM, permanent runner, ACR or Container Apps
+   environment is needed. The temporary app shares existing paid plan capacity,
+   but can consume CPU/memory during bootstrap.
+7. SCM defaults to deny all. The helper discovers this job's public IPv4 over
+   HTTPS and temporarily allows only that `/32` for Entra ZIP publishing.
+   It removes the rule in `finally`; an independent workflow `always()` step
+   checks cleanup again. Customer origin rules are never relaxed. The temporary
+   app's status endpoint requires both the job IP and a random per-release token;
+   it exposes no bootstrap trigger or SQL interface. Any failed status or cleanup
+   fails the release explicitly. Abrupt runner loss/forced cancellation can still
+   prevent cleanup; operators must inspect the exact temporary resources and
+   remove residual admin/SCM access before approving another release.
 
 ### GitHub environment secrets
 
@@ -360,14 +337,11 @@ In **Settings > Environments > production > Environment secrets**, configure:
 | `AZURE_TENANT_ID` | Tenant ID for deployment, customer sign-in and PostgreSQL Entra auth |
 | `AZURE_SUBSCRIPTION_ID` | Target subscription ID |
 | `AZURE_RESOURCE_GROUP` | Existing target resource group |
-| `AZURE_PRINCIPAL_OBJECT_ID` | Service-principal object ID of that deployment identity |
-| `AZURE_PRINCIPAL_NAME` | Display name of that deployment service principal; PostgreSQL bootstrap login |
 | `ENTRA_CLIENT_ID` | Client ID of the separate customer sign-in application |
 | `ENTRA_CLIENT_SECRET` | Unexpired secret **value** of the sign-in application, not a deployment credential |
 | `OPENWEATHER_API_KEY` | Real OpenWeather API key |
 | `DATABASE_ADMIN_GROUP_OBJECT_ID` | Object ID of the human database-administrator security group |
 | `DATABASE_ADMIN_GROUP_NAME` | Its display name |
-| `RELEASE_RUNNER_IPV4` | Single stable public egress IPv4 of the release runner, without `/32` |
 | `ALERT_EMAIL` | Operational notification destination |
 
 Identifiers and the resource-group name could instead be GitHub environment
@@ -378,7 +352,8 @@ The local `.env` is **not** uploaded to GitHub or Azure.
 The workflow binds Secrets to environment variables, and Bicep reads them through
 `main.bicepparam`. API/sign-in secrets go into Key Vault; App Service uses managed
 identity and Key Vault references. Azure login uses OIDC, while database bootstrap
-uses a separately acquired, masked Entra access token. No secret is embedded in
+acquires a token inside the temporary app using its separate managed identity.
+No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.
 
@@ -397,11 +372,11 @@ approved release. The bootstrap is designed to be rerunnable without dropping
 customer data. No automatic destructive rollback is implemented.
 
 Local validation can lint the workflow with actionlint and run
-`infra/validate.ps1`; actual OIDC/Graph permissions, private connectivity,
+`infra/validate.ps1`; actual OIDC permissions, private connectivity,
 SCM deployment, bootstrap and customer sign-in require the configured GitHub/Azure
 environment. Those cloud operations have not been exercised locally.
 
-### Reserving release-runner egress before application deployment
+### Existing network bootstrap and obsolete runner secrets
 
 [bootstrap-network.bicep](bootstrap-network.bicep) reuses the exact
 [network.bicep](network.bicep) module and the naming inputs from
@@ -418,18 +393,17 @@ access. The IP must not be deleted/recreated between releases.
 For the exercise, deployment `skycast-network-bootstrap` succeeded after Azure
 validation and a create-only `what-if`. Its public IP was checked for static IPv4
 allocation and NAT association, and the administration subnet association was
-verified before uploading `RELEASE_RUNNER_IPV4` to GitHub Repository Secrets.
-All 13 workflow secret names are now present; that does not prove credential
-validity or release readiness.
+verified before uploading the former `RELEASE_RUNNER_IPV4` secret.
+The hosted-runner design no longer uses that secret, `AZURE_PRINCIPAL_OBJECT_ID`
+or `AZURE_PRINCIPAL_NAME`. They can be removed from GitHub; the workflow now
+requires only the ten secrets listed above. Presence does not prove validity.
 
-**A release runner still needs provisioning and registration.** Put its private
-NIC in the administration subnet, without a public IP, and use outbound-only
-GitHub connectivity. Confirm its externally observed egress matches
-`RELEASE_RUNNER_IPV4` before allowing a release. Also verify private PostgreSQL
-DNS/routing after the database is deployed. A reserved NAT address is not a
-running or tested runner. Follow the isolated/ephemeral runner guidance above.
+The NAT remains necessary for application and bootstrap-app VNet egress, not
+for a self-hosted runner. Do not delete it just because the runner was removed.
+The administration subnet is available for controlled human recovery access,
+but no permanent runner is provisioned or required.
 
-The NAT gateway, public IP and private DNS incur charges even before the runner
+The NAT gateway, public IP and private DNS incur charges even before the app
 exists. Current retail-price lookup returned no matching meters during setup;
 no verified monthly estimate is claimed. Review actual subscription pricing
 before leaving the network provisioned long-term.

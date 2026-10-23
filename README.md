@@ -6,8 +6,8 @@ The [Bicep templates and architecture/deployment guide](infra/README.md) describ
 a European, zone-resilient PaaS environment with Front Door/WAF, App Service,
 private PostgreSQL, managed identity, Key Vault, autoscale and monitoring.
 The networking-only Azure foundation has been deployed; the application,
-database and release runner have not. GitHub Actions is enabled for validation;
-production releases require environment approval and an online private runner.
+database have not. GitHub Actions uses hosted runners; approved releases run
+private database bootstrap in a temporary app sharing the App Service plan.
 Local development is unchanged. See the [infrastructure status](infra/README.md#status-and-scope).
 
 ## GitHub Actions CI/CD
@@ -15,8 +15,9 @@ Local development is unchanged. See the [infrastructure status](infra/README.md#
 The [deployment workflow](.github/workflows/deploy.yml) runs CI on pull requests
 and pushes to `main`, then deploys approved `main` releases using Azure OIDC.
 Follow the [one-time GitHub/Azure setup and Secrets list](infra/README.md#github-actions-cicd)
-before pushing: production requires a protected GitHub environment and a trusted
-private-network release runner. Saving the workflow locally does not deploy anything.
+before pushing: production requires a protected GitHub environment. An application
+owner manually registers the sign-in callback after deployment. No self-hosted
+runner or deployment identity Microsoft Graph permissions are required.
 
 ## Local browser development
 

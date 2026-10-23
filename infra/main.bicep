@@ -32,17 +32,6 @@ param databaseAdminGroupObjectId string
 @description('Display name of that Entra group; used as the PostgreSQL administrator login.')
 param databaseAdminGroupName string
 
-@description('Optional object ID of the trusted OIDC deployment service principal for automated database bootstrap.')
-param databaseBootstrapObjectId string = ''
-
-@description('Display name of the deployment service principal. Required when databaseBootstrapObjectId is supplied.')
-param databaseBootstrapPrincipalName string = ''
-
-@description('Single public IPv4 address of the authorized release runner, WITHOUT a CIDR suffix. SCM is otherwise denied.')
-@minLength(7)
-@maxLength(15)
-param releaseRunnerIpv4 string
-
 @description('Email receiving operational alerts. Required so production alerts have a destination.')
 param alertEmail string
 
@@ -78,6 +67,16 @@ module runtimeIdentity 'br/public:avm/res/managed-identity/user-assigned-identit
   name: 'runtime-identity'
   params: {
     name: '${prefix}-app'
+    location: location
+    tags: tags
+    enableTelemetry: false
+  }
+}
+
+module bootstrapIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.6.0' = {
+  name: 'bootstrap-identity'
+  params: {
+    name: '${prefix}-bootstrap'
     location: location
     tags: tags
     enableTelemetry: false
@@ -174,14 +173,6 @@ module database 'br/public:avm/res/db-for-postgre-sql/flexible-server:0.13.0' = 
         principalType: 'Group'
         tenantId: tenantId
       }
-      ...(!empty(databaseBootstrapObjectId) ? [
-        {
-          objectId: databaseBootstrapObjectId
-          principalName: databaseBootstrapPrincipalName
-          principalType: 'ServicePrincipal'
-          tenantId: tenantId
-        }
-      ] : [])
     ]
     publicNetworkAccess: 'Disabled'
     delegatedSubnetResourceId: network.outputs.databaseSubnetId
@@ -248,7 +239,6 @@ module web 'web.bicep' = {
     frontDoorId: edgeProfile.properties.frontDoorId
     tenantId: tenantId
     entraClientId: entraClientId
-    releaseRunnerIpv4: releaseRunnerIpv4
   }
   dependsOn: [frontDoor]
 }
@@ -283,7 +273,15 @@ output entraRedirectUri string = 'https://${edge.outputs.hostname}/.auth/login/a
 output webAppName string = web.outputs.name
 output postgresHost string = database.outputs.?fqdn!
 output postgresAdminLogin string = databaseAdminGroupName
-output postgresBootstrapLogin string = databaseBootstrapPrincipalName
+output postgresServerName string = database.outputs.name
+output bootstrapIdentityResourceId string = bootstrapIdentity.outputs.resourceId
+output bootstrapIdentityClientId string = bootstrapIdentity.outputs.clientId
+output bootstrapIdentityObjectId string = bootstrapIdentity.outputs.principalId
+output bootstrapIdentityName string = bootstrapIdentity.outputs.name
+output bootstrapWebAppName string = '${prefix}-bootstrap-web'
+output appServicePlanId string = web.outputs.planId
+output appSubnetId string = network.outputs.appSubnetId
+output deploymentLocation string = location
 output runtimeDatabaseRole string = runtimeIdentity.outputs.name
 output runtimePrincipalObjectId string = runtimeIdentity.outputs.principalId
 output keyVaultName string = vault.outputs.name

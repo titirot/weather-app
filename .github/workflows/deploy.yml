@@ -124,9 +124,7 @@ jobs:
     name: Deploy approved production release
     needs: ci
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    # An ephemeral, trusted Linux runner with private DB DNS/routing is required.
-    # NEVER run pull-request jobs on this runner.
-    runs-on: [self-hosted, linux, x64, azure-private]
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:
       name: production
@@ -150,9 +148,6 @@ jobs:
       OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
       DATABASE_ADMIN_GROUP_OBJECT_ID: ${{ secrets.DATABASE_ADMIN_GROUP_OBJECT_ID }}
       DATABASE_ADMIN_GROUP_NAME: ${{ secrets.DATABASE_ADMIN_GROUP_NAME }}
-      DATABASE_BOOTSTRAP_OBJECT_ID: ${{ secrets.AZURE_PRINCIPAL_OBJECT_ID }}
-      DATABASE_BOOTSTRAP_PRINCIPAL_NAME: ${{ secrets.AZURE_PRINCIPAL_NAME }}
-      RELEASE_RUNNER_IPV4: ${{ secrets.RELEASE_RUNNER_IPV4 }}
       ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
     steps:
       - name: Check out the approved commit
@@ -165,11 +160,11 @@ jobs:
           set -euo pipefail
           config_dir="$(mktemp -d "$RUNNER_TEMP/azure-weather.XXXXXX")"
           echo "AZURE_CONFIG_DIR=$config_dir" >> "$GITHUB_ENV"
-          for tool in az python3 psql curl sha256sum; do
+          for tool in az python3 curl sha256sum; do
             command -v "$tool" >/dev/null || { echo "::error::Missing runner tool: $tool"; exit 1; }
           done
+          az postgres flexible-server microsoft-entra-admin create --help >/dev/null
           python3 - <<'PY'
-          import ipaddress
           import os
           import uuid
 
@@ -177,23 +172,17 @@ jobs:
               "AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
               "AZURE_RESOURCE_GROUP", "ENTRA_CLIENT_ID", "ENTRA_CLIENT_SECRET",
               "OPENWEATHER_API_KEY", "DATABASE_ADMIN_GROUP_OBJECT_ID",
-              "DATABASE_ADMIN_GROUP_NAME", "RELEASE_RUNNER_IPV4", "ALERT_EMAIL",
-              "DATABASE_BOOTSTRAP_OBJECT_ID", "DATABASE_BOOTSTRAP_PRINCIPAL_NAME",
+              "DATABASE_ADMIN_GROUP_NAME", "ALERT_EMAIL",
           )
           missing = [name for name in required if not os.environ.get(name, "").strip()]
           if missing:
               raise SystemExit("Missing GitHub production secrets: " + ", ".join(missing))
           for name in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
-                       "ENTRA_CLIENT_ID", "DATABASE_ADMIN_GROUP_OBJECT_ID",
-                       "DATABASE_BOOTSTRAP_OBJECT_ID"):
+                       "ENTRA_CLIENT_ID", "DATABASE_ADMIN_GROUP_OBJECT_ID"):
               try:
                   uuid.UUID(os.environ[name])
               except ValueError:
                   raise SystemExit(f"{name} must be a UUID.") from None
-          try:
-              ipaddress.IPv4Address(os.environ["RELEASE_RUNNER_IPV4"])
-          except ipaddress.AddressValueError:
-              raise SystemExit("RELEASE_RUNNER_IPV4 must be a single IPv4 address, without /32.") from None
           PY
 
       - name: Download the tested application
@@ -216,15 +205,6 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Confirm the database bootstrap identity
-        run: |
-          set -euo pipefail
-          actual_oid="$(az ad sp show --id "$AZURE_CLIENT_ID" --query id --output tsv)"
-          test "${actual_oid,,}" = "${DATABASE_BOOTSTRAP_OBJECT_ID,,}" || {
-            echo "::error::AZURE_PRINCIPAL_OBJECT_ID must identify the OIDC deployment principal."
-            exit 1
-          }
 
       - name: Validate against Azure and preview infrastructure changes
         run: |
@@ -261,7 +241,6 @@ jobs:
               "entraRedirectUri": "redirect-uri",
               "webAppName": "web-app-name",
               "postgresHost": "postgres-host",
-              "postgresBootstrapLogin": "postgres-bootstrap-login",
               "runtimeDatabaseRole": "runtime-database-role",
               "runtimePrincipalObjectId": "runtime-principal-object-id",
           }
@@ -276,72 +255,26 @@ jobs:
               raise SystemExit("Unexpected Front Door URL.")
           PY
 
-      - name: Configure the Entra callback without removing existing redirects
+      - name: Record required manual sign-in callback
         env:
           REDIRECT_URI: ${{ steps.infrastructure.outputs.redirect-uri }}
         run: |
           set -euo pipefail
-          redirects="$RUNNER_TEMP/weather-redirects-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
-          az ad app show --id "$ENTRA_CLIENT_ID" --query web.redirectUris --output json > "$redirects"
-          redirect_list="$RUNNER_TEMP/weather-redirect-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.txt"
-          python3 - "$redirects" > "$redirect_list" <<'PY'
-          import json
-          import os
-          import sys
-          uris = json.load(open(sys.argv[1], encoding="utf-8")) or []
-          for uri in dict.fromkeys([*uris, os.environ["REDIRECT_URI"]]):
-              if not isinstance(uri, str) or "\n" in uri or "\r" in uri:
-                  raise SystemExit("Invalid Entra redirect URI.")
-              print(uri)
-          PY
-          mapfile -t uris < "$redirect_list"
-          test "${#uris[@]}" -gt 0
-          az ad app update --id "$ENTRA_CLIENT_ID" \
-            --enable-id-token-issuance true --web-redirect-uris "${uris[@]}" --output none
+          printf '### Manual sign-in acceptance required\n\nAn application owner must add this Web redirect URI to the customer sign-in app, preserving existing URIs:\n\n`%s`\n\nTest real sign-in and saved preferences before production acceptance.\n' \
+            "$REDIRECT_URI" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Bootstrap the private PostgreSQL runtime role
-        env:
-          PGHOST: ${{ steps.infrastructure.outputs.postgres-host }}
-          PGUSER: ${{ steps.infrastructure.outputs.postgres-bootstrap-login }}
-          PGDATABASE: postgres
-          PGSSLMODE: verify-full
-          PGSSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
-          PGCONNECT_TIMEOUT: '10'
-          RUNTIME_ROLE: ${{ steps.infrastructure.outputs.runtime-database-role }}
-          RUNTIME_OBJECT_ID: ${{ steps.infrastructure.outputs.runtime-principal-object-id }}
+      - name: Bootstrap PostgreSQL inside a temporary private-connected App Service
         run: |
           set -euo pipefail
-          # Fail before token acquisition if private DNS/routing is missing.
-          python3 - <<'PY'
-          import ipaddress
-          import os
-          import socket
-          addresses = socket.getaddrinfo(os.environ["PGHOST"], 5432, type=socket.SOCK_STREAM)
-          if not addresses or any(not ipaddress.ip_address(a[4][0]).is_private for a in addresses):
-              raise SystemExit("PostgreSQL must resolve to private addresses on the release runner.")
-          with socket.create_connection((os.environ["PGHOST"], 5432), timeout=10):
-              pass
-          PY
-          token="$(az account get-access-token \
-            --resource https://ossrdbms-aad.database.windows.net \
-            --query accessToken --output tsv)"
-          test -n "$token"
-          echo "::add-mask::$token"
-          export PGPASSWORD="$token"
-          trap 'unset PGPASSWORD token' EXIT
-          psql --no-psqlrc --set=ON_ERROR_STOP=1 \
-            --set=runtime_role="$RUNTIME_ROLE" --set=runtime_object_id="$RUNTIME_OBJECT_ID" \
-            --file=infra/bootstrap-database.sql
+          python3 infra/release.py bootstrap \
+            --outputs "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
 
       - name: Deploy the tested Python application using Entra authorization
-        env:
-          WEB_APP_NAME: ${{ steps.infrastructure.outputs.web-app-name }}
         run: |
           set -euo pipefail
-          az webapp deploy --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$WEB_APP_NAME" \
-            --src-path "$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip" \
-            --type zip --restart true --track-status true --output none
+          python3 infra/release.py publish \
+            --outputs "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            --archive "$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip"
 
       - name: Verify the public application and origin protection
         env:
@@ -392,8 +325,14 @@ jobs:
           status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
             --connect-timeout 10 --max-time 30 "https://$origin/healthz")"
           test "$status" = 403 || { echo "::error::Direct origin must return 403."; exit 1; }
-          printf '### Deployment verified\n\nApplication: %s\n\nCommit: `%s`\n' \
+          printf '### Technical smoke checks passed; manual sign-in acceptance remains\n\nApplication: %s\n\nCommit: `%s`\n' \
             "$APPLICATION_URL" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify privileged bootstrap cleanup and SCM lockdown
+        if: always() && steps.infrastructure.outcome == 'success'
+        run: |
+          python3 infra/release.py cleanup \
+            --outputs "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
 
       - name: Clear Azure account state
         if: always()
@@ -408,6 +347,4 @@ jobs:
         run: |
           rm -f -- \
             "$RUNNER_TEMP/weather-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/weather.zip" \
-            "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
-            "$RUNNER_TEMP/weather-redirects-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
-            "$RUNNER_TEMP/weather-redirect-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.txt"
+            "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"

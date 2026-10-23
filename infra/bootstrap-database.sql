@@ -1,6 +1,6 @@
 \set ON_ERROR_STOP on
 
--- Connect as the configured Entra administrator group or deployment principal.
+-- Connect as the human administrator group or temporary bootstrap managed identity.
 -- psql variables: runtime_role (identity name), runtime_object_id (principal object ID).
 BEGIN;
 SELECT pg_advisory_xact_lock(727274002);
