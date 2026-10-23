@@ -2,12 +2,88 @@ import io
 import os
 import subprocess
 import unittest
+import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 import psycopg
 
 from infra import bootstrap_app, release
+
+
+@unittest.skipUnless(os.environ.get("TEST_DATABASE_URL"), "TEST_DATABASE_URL is not configured")
+class BootstrapSqlIntegrationTests(unittest.TestCase):
+    def test_existing_mapping_uses_case_independent_function_column_aliases(self):
+        role = "bootstrap_test_" + uuid.uuid4().hex
+        object_id = str(uuid.uuid4())
+        source = Path(bootstrap_app.__file__).with_name("bootstrap-database.sql").read_text()
+        source = source.replace("\\set ON_ERROR_STOP on\n", "").split("\\connect weather")[0]
+        source = source.replace("pg_catalog.pgaadauth_", "pg_temp.pgaadauth_")
+        source = source.replace(":'runtime_role'", "{role_literal}")
+        source = source.replace(":'runtime_object_id'", "{object_literal}")
+        statement = bootstrap_app.sql.SQL(source).format(
+            role_literal=bootstrap_app.sql.Literal(role),
+            object_literal=bootstrap_app.sql.Literal(object_id),
+        )
+        with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as connection:
+            connection.execute(bootstrap_app.sql.SQL("CREATE ROLE {}").format(
+                bootstrap_app.sql.Identifier(role)))
+            try:
+                connection.execute(
+                    "CREATE TEMP TABLE bootstrap_fixture (object_id text, is_admin integer)")
+                connection.execute(
+                    "INSERT INTO bootstrap_fixture VALUES (%s, 0)", (object_id,))
+                connection.execute(bootstrap_app.sql.SQL("""
+                    CREATE FUNCTION pg_temp.pgaadauth_list_principals(boolean)
+                    RETURNS TABLE(rolename name, "principalType" text, "objectId" text,
+                                  "tenantId" text, "isMfa" integer, "isAdmin" integer)
+                    LANGUAGE SQL AS $fixture$
+                    SELECT {}::name, 'service'::text, object_id, ''::text, 0, is_admin
+                    FROM bootstrap_fixture
+                    $fixture$
+                """).format(bootstrap_app.sql.Literal(role)))
+                connection.execute("""
+                    CREATE FUNCTION pg_temp.pgaadauth_create_principal_with_oid(
+                        text, text, text, boolean, boolean)
+                    RETURNS text LANGUAGE plpgsql AS $fixture$
+                    BEGIN RAISE EXCEPTION 'Existing mapped role must not be recreated'; END
+                    $fixture$
+                """)
+                for column in ("objectid", "isadmin"):
+                    with self.subTest(unquoted_column=column):
+                        with self.assertRaises(psycopg.errors.UndefinedColumn) as error:
+                            connection.execute(bootstrap_app.sql.SQL(
+                                "SELECT {} FROM pg_temp.pgaadauth_list_principals(false)"
+                            ).format(bootstrap_app.sql.Identifier(column)))
+                        self.assertEqual(error.exception.sqlstate, "42703")
+                for attempt in range(2):
+                    with self.subTest(idempotent_attempt=attempt):
+                        connection.execute(statement, prepare=False)
+                for mapped_id, is_admin in ((str(uuid.uuid4()), 0), (object_id, 1)):
+                    with self.subTest(mapped_id=mapped_id, is_admin=is_admin):
+                        connection.execute(
+                            "UPDATE bootstrap_fixture SET object_id = %s, is_admin = %s",
+                            (mapped_id, is_admin))
+                        try:
+                            with self.assertRaisesRegex(
+                                psycopg.errors.RaiseException, "unexpected Entra mapping"
+                            ):
+                                connection.execute(statement, prepare=False)
+                        finally:
+                            connection.execute("ROLLBACK")
+                connection.execute(
+                    "UPDATE bootstrap_fixture SET object_id = %s, is_admin = 0", (object_id,))
+                connection.execute(bootstrap_app.sql.SQL("ALTER ROLE {} CREATEROLE").format(
+                    bootstrap_app.sql.Identifier(role)))
+                with self.assertRaisesRegex(
+                    psycopg.errors.RaiseException, "must not have server administration privileges"
+                ):
+                    connection.execute(statement, prepare=False)
+            finally:
+                connection.execute("ROLLBACK")
+                connection.execute(bootstrap_app.sql.SQL("DROP ROLE {}").format(
+                    bootstrap_app.sql.Identifier(role)))
 
 
 class BootstrapTests(unittest.TestCase):

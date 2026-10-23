@@ -20,8 +20,9 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = requested.role_name)
        AND NOT EXISTS (
            SELECT 1 FROM pg_catalog.pgaadauth_list_principals(false)
-           WHERE rolename = requested.role_name AND objectid::uuid = requested.object_id
-               AND isadmin = 0
+               AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)
+           WHERE principal.role_name = requested.role_name
+               AND principal.object_id::uuid = requested.object_id AND principal.is_admin = 0
        ) THEN
         RAISE EXCEPTION 'Existing runtime role has an unexpected Entra mapping or administrator privileges';
     END IF;

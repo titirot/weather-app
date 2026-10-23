@@ -365,6 +365,15 @@ Token output is suppressed; no client password or publish profile is needed.
 If private bootstrap fails, its protected status endpoint reports only the
 exception class and SQLSTATE before cleanup deletes the temporary app. Raw
 database exception text and connection details are never copied into release logs.
+For `UndefinedColumn` (`42703`) during principal verification, check the Entra
+function's result columns: `objectId` and `isAdmin` are mixed-case names, not
+unquoted `objectid` and `isadmin`. The bootstrap assigns explicit positional
+column aliases so verification does not depend on identifier case. With
+`TEST_DATABASE_URL` set to a dedicated local PostgreSQL test database, run
+`python -m unittest discover -s tests -p test_release.py -v` to reproduce the old
+column-resolution error and verify the fixed SQL, repeat execution, and rejection
+of mismatched or privileged roles. The local fixture models the Azure function's
+result schema; it does not validate the Azure extension or cloud connectivity.
 No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.
