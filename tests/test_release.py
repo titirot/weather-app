@@ -1,7 +1,9 @@
+import io
 import os
 import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 import psycopg
 
@@ -27,7 +29,9 @@ class BootstrapTests(unittest.TestCase):
                 "/status", headers={"Authorization": "Bearer " + token}
             )
             self.assertEqual(result.status_code, 500)
-            self.assertEqual(result.json, {"status": "failed"})
+            self.assertEqual(result.json, {"status": "failed", "error": "OperationalError",
+                                          "sqlstate": None})
+            self.assertNotIn("secret-value", result.get_data(as_text=True))
 
     def test_private_sql_uses_verified_tls_and_safe_role_quoting(self):
         env = {
@@ -76,6 +80,13 @@ class BootstrapTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_bootstrap_failure_reports_safe_sqlstate_before_cleanup(self):
+        error = HTTPError("https://private/status", 500, "failure", {},
+                          io.BytesIO(b'{"status":"failed","error":"InsufficientPrivilege","sqlstate":"42501"}'))
+        with patch.object(release, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "InsufficientPrivilege; SQLSTATE 42501"):
+                release.wait_for_bootstrap("private", "token")
+
     def test_publishing_token_is_acquired_for_the_current_cloud_without_output(self):
         with patch.object(release, "az", side_effect=["https://appservice.azure.com", None]) as azure:
             release.prepare_publishing_token()
