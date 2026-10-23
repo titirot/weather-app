@@ -157,4 +157,4 @@ resource privacyLogs 'Microsoft.Web/sites/config@2025-03-01' = {
 output siteId string = site.outputs.resourceId
 output planId string = plan.outputs.resourceId
 output name string = site.outputs.name
-output defaultHostname string = webApp.properties.defaultHostName
+output defaultHostname string = site.outputs.defaultHostname
