@@ -27,6 +27,26 @@ class InfrastructureTests(unittest.TestCase):
     def module_template(self, name):
         return self.modules[name]["properties"]["template"]
 
+    @unittest.skipUnless(os.environ.get("COMPILED_NETWORK_BOOTSTRAP"), "Run infra/validate.ps1")
+    def test_network_bootstrap_matches_production(self):
+        bootstrap = json.loads(
+            Path(os.environ["COMPILED_NETWORK_BOOTSTRAP"]).read_text(encoding="utf-8")
+        )
+        modules = [r for r in resources(bootstrap)
+                   if r["type"] == "Microsoft.Resources/deployments"]
+        self.assertEqual([r["name"] for r in modules], ["private-network"])
+        network = modules[0]["properties"]
+        self.assertEqual(network["template"], self.module_template("private-network"))
+        self.assertEqual(network["parameters"]["prefix"],
+                         self.module_parameters("private-network")["prefix"])
+        for name in ("suffix", "prefix"):
+            self.assertEqual(bootstrap["variables"][name], self.template["variables"][name])
+        for name in ("location", "workloadName", "environmentName"):
+            self.assertEqual(bootstrap["parameters"][name]["defaultValue"],
+                             self.template["parameters"][name]["defaultValue"])
+        self.assertIn("releasePublicIpName", bootstrap["outputs"])
+        self.assertIn("administrationSubnetId", bootstrap["outputs"])
+
     def module_parameters(self, name):
         return self.modules[name]["properties"]["parameters"]
 
@@ -111,6 +131,13 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(route["properties"]["httpsRedirect"], "Enabled")
         waf = next(r for r in edge_resources if r.get("name") == "edge-waf-policy")
         self.assertEqual(waf["properties"]["parameters"]["policySettings"]["value"]["mode"], "Prevention")
+        waf_template = waf["properties"]["template"]
+        managed = waf_template["parameters"]["managedRules"]["defaultValue"]["managedRuleSets"]
+        self.assertIn("Microsoft_DefaultRuleSet", {rule["ruleSetType"] for rule in managed})
+        self.assertIn("Microsoft_BotManagerRuleSet", {rule["ruleSetType"] for rule in managed})
+        rules = waf["properties"]["parameters"]["customRules"]["value"]["rules"]
+        self.assertTrue(any(rule["ruleType"] == "RateLimitRule" and
+                            rule["action"] == "Block" for rule in rules))
         self.assertTrue(any(r["type"].endswith("/securityPolicies") for r in edge_resources))
 
     def test_private_network_and_zone_redundant_egress(self):
