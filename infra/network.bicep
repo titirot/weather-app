@@ -118,6 +118,8 @@ module vaultDns 'br/public:avm/res/network/private-dns-zone:0.8.1' = {
 }
 
 output appSubnetId string = '${vnet.outputs.resourceId}/subnets/app-integration'
+output administrationSubnetId string = '${vnet.outputs.resourceId}/subnets/administration'
+output natGatewayId string = outbound.outputs.resourceId
 output databaseSubnetId string = '${vnet.outputs.resourceId}/subnets/postgresql'
 output privateEndpointSubnetId string = '${vnet.outputs.resourceId}/subnets/private-endpoints'
 output databaseDnsZoneId string = postgresDns.outputs.resourceId

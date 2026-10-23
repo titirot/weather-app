@@ -2,8 +2,9 @@
 
 ## Status and scope
 
-These files **describe** the environment; they have not deployed it. No Azure
-resources, Entra registrations or paid services were created during authoring.
+The full application environment is not deployed. The networking-only bootstrap
+has been deployed to `weatherdemo-rg` in Sweden Central, and Entra identities
+have been configured separately. Networking now incurs Azure charges.
 Local development and the Docker database remain unchanged.
 
 The templates provision infrastructure, authentication configuration and runtime
@@ -13,6 +14,29 @@ is not proof that Azure has capacity, that secrets are valid, or that the live
 application works.
 
 ## Architecture
+
+### Client requirements and release acceptance
+
+| Requirement | Implementation | Verification / remaining acceptance |
+| --- | --- | --- |
+| European hosting and competitive pricing | Sweden Central for regional resources; configurable European alternatives | P0v3 is offered and PostgreSQL HA/geo-backup capabilities were returned for this subscription. Current complete regional price comparison is still required; cheapest-region status is not proven. |
+| Global access and latency | Front Door global edge, TLS and Microsoft backbone to the European origin | Dynamic responses are deliberately not edge-cached. Measure latency from representative countries; one European origin cannot promise minimum latency everywhere. |
+| Prefer PaaS | App Service, managed PostgreSQL, Key Vault, Front Door and Azure Monitor | The private release runner is deployment tooling, not the application hosting tier. It is not yet provisioned. |
+| API, operations and PostgreSQL storage | Server-side OpenWeather calls, per-user preference/activity persistence and private database connectivity | Local tests cover application/storage behavior. Authenticated cloud save/read/delete and user isolation must pass after deployment. |
+| Cost/benefit | Two minimum web workers, bounded autoscale, managed services and bounded logging | HA database and Premium WAF have material fixed cost. Approve total monthly estimate and add a subscription budget/alerts; autoscale limits are not a spending cap. |
+| Privacy | Tenant/guest authentication, non-admin runtime identity, TLS, private DB/vault, no personal-response edge caching, data erasure and restricted logging | Confirm customer onboarding, contractual residency, retention/backup erasure process and secret rotation. No automatic GDPR compliance claim. |
+| High availability | Zone-redundant web plan and PostgreSQL standby, health probes, alerts and backups | Perform failover and restore drills and agree RTO/RPO. Cross-region automatic failover and zero-downtime release slots are not configured. |
+
+Initial deployment is not production acceptance. The deployment principal's
+Microsoft Graph consent remains pending tenant-admin action, and an online,
+trusted `azure-private` runner is required. Neither a complete secret-name list
+nor a passing Bicep build resolves those prerequisites. Never replace the runner
+with a public-database exception, bypass production approval, or silently reduce
+HA to force the first release through.
+
+The developer's API key has appeared in shared editor/chat context. Rotate it
+at the provider before production and replace both the local value and GitHub
+secret without posting the replacement into chat.
 
 ```mermaid
 flowchart TB
@@ -245,7 +269,8 @@ below instead of performing these steps manually.
 ## GitHub Actions CI/CD
 
 The complete workflow is [deploy.yml](../.github/workflows/deploy.yml).
-It is saved locally; it has not been pushed or executed against Azure.
+The workflow is published to GitHub, but Actions remains disabled and no workflow
+deployment has been executed against Azure.
 
 ### Trigger and release model
 
@@ -375,6 +400,39 @@ Local validation can lint the workflow with actionlint and run
 `infra/validate.ps1`; actual OIDC/Graph permissions, private connectivity,
 SCM deployment, bootstrap and customer sign-in require the configured GitHub/Azure
 environment. Those cloud operations have not been exercised locally.
+
+### Reserving release-runner egress before application deployment
+
+[bootstrap-network.bicep](bootstrap-network.bicep) reuses the exact
+[network.bicep](network.bicep) module and the naming inputs from
+[main.bicep](main.bicep). Deploy it incrementally in the same subscription,
+resource group, region, workload and environment as the eventual application.
+Changing these inputs would create a different network and egress address.
+
+The bootstrap creates the VNet and subnets, PostgreSQL NSG, private DNS zones
+and links, plus a StandardV2 NAT gateway with a static StandardV2 public IPv4.
+It creates no VM, runner registration, database, web app or Front Door.
+The administration subnet uses this NAT gateway and disables default outbound
+access. The IP must not be deleted/recreated between releases.
+
+For the exercise, deployment `skycast-network-bootstrap` succeeded after Azure
+validation and a create-only `what-if`. Its public IP was checked for static IPv4
+allocation and NAT association, and the administration subnet association was
+verified before uploading `RELEASE_RUNNER_IPV4` to GitHub Repository Secrets.
+All 13 workflow secret names are now present; that does not prove credential
+validity or release readiness.
+
+**A release runner still needs provisioning and registration.** Put its private
+NIC in the administration subnet, without a public IP, and use outbound-only
+GitHub connectivity. Confirm its externally observed egress matches
+`RELEASE_RUNNER_IPV4` before allowing a release. Also verify private PostgreSQL
+DNS/routing after the database is deployed. A reserved NAT address is not a
+running or tested runner. Follow the isolated/ephemeral runner guidance above.
+
+The NAT gateway, public IP and private DNS incur charges even before the runner
+exists. Current retail-price lookup returned no matching meters during setup;
+no verified monthly estimate is claimed. Review actual subscription pricing
+before leaving the network provisioned long-term.
 
 ## Sources and AI assistance
 
