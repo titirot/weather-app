@@ -362,6 +362,9 @@ The workflow refreshes OIDC login before each publishing phase. The release help
 pre-acquires the App Service audience token before lengthy bootstrap provisioning,
 so publishing does not try to exchange an expired five-minute GitHub assertion.
 Token output is suppressed; no client password or publish profile is needed.
+If private bootstrap fails, its protected status endpoint reports only the
+exception class and SQLSTATE before cleanup deletes the temporary app. Raw
+database exception text and connection details are never copied into release logs.
 No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.

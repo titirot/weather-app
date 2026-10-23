@@ -70,21 +70,23 @@ def create_app(bootstrap=run_bootstrap):
     if len(token) < 64:
         raise ValueError("Bootstrap status token must contain at least 64 characters")
     app = Flask(__name__)
-    state = "succeeded"
+    state = {"status": "succeeded"}
     try:
         bootstrap()
     except (psycopg.Error, AzureError, ValueError, RuntimeError, OSError) as error:
         # Database exceptions can contain connection details; log only their class.
-        app.logger.error("Private database bootstrap failed (%s)", type(error).__name__)
-        state = "failed"
+        app.logger.error("Private database bootstrap failed (%s; SQLSTATE %s)",
+                         type(error).__name__, getattr(error, "sqlstate", None))
+        state = {"status": "failed", "error": type(error).__name__,
+                 "sqlstate": getattr(error, "sqlstate", None)}
 
     @app.get("/status")
     def status():
         supplied = request.headers.get("Authorization", "")
         if not hmac.compare_digest(supplied, "Bearer " + token):
             return jsonify(error="unauthorized"), 401
-        response = jsonify(status=state)
+        response = jsonify(state)
         response.headers["Cache-Control"] = "no-store"
-        return response, 200 if state == "succeeded" else 500
+        return response, 200 if state["status"] == "succeeded" else 500
 
     return app

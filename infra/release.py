@@ -56,7 +56,18 @@ def wait_for_bootstrap(host, token):
                 return
         except HTTPError as error:
             if error.code == 500:
-                raise RuntimeError("Private bootstrap failed; inspect temporary app diagnostics") from None
+                failure = json.load(error)
+                category = failure.get("error", "UnknownError")
+                sqlstate = failure.get("sqlstate")
+                if not isinstance(category, str) or not category.isidentifier():
+                    raise RuntimeError("Invalid bootstrap failure category") from None
+                if sqlstate is not None and (
+                    not isinstance(sqlstate, str) or len(sqlstate) != 5 or not sqlstate.isalnum()
+                ):
+                    raise RuntimeError("Invalid bootstrap SQLSTATE") from None
+                raise RuntimeError(
+                    f"Private bootstrap failed ({category}; SQLSTATE {sqlstate})"
+                ) from None
             if error.code not in (403, 404, 502, 503):
                 raise
             print(f"Bootstrap startup attempt {attempt + 1}/40: HTTP {error.code}", flush=True)
