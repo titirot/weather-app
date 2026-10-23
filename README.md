@@ -5,8 +5,9 @@
 The [Bicep templates and architecture/deployment guide](infra/README.md) describe
 a European, zone-resilient PaaS environment with Front Door/WAF, App Service,
 private PostgreSQL, managed identity, Key Vault, autoscale and monitoring.
-The networking-only Azure foundation has been deployed; the application,
-database have not. GitHub Actions uses hosted runners; approved releases run
+Azure infrastructure has been provisioned, including private, zone-redundant
+PostgreSQL. Application publishing and authenticated cloud acceptance are not
+yet complete. GitHub Actions uses hosted runners; approved releases run
 private database bootstrap in a temporary app sharing the App Service plan.
 Local development is unchanged. See the [infrastructure status](infra/README.md#status-and-scope).
 
