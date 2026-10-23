@@ -217,10 +217,6 @@ module frontDoor 'br/public:avm/res/cdn/profile:0.20.0' = {
   }
 }
 
-resource edgeProfile 'Microsoft.Cdn/profiles@2025-06-01' existing = {
-  name: '${prefix}-fd'
-}
-
 module web 'web.bicep' = {
   name: 'flask-web-application'
   params: {
@@ -236,11 +232,10 @@ module web 'web.bicep' = {
     databaseUser: runtimeIdentity.outputs.name
     vaultName: vault.outputs.name
     workspaceId: workspace.outputs.resourceId
-    frontDoorId: edgeProfile.properties.frontDoorId
+    frontDoorProfileName: frontDoor.outputs.name
     tenantId: tenantId
     entraClientId: entraClientId
   }
-  dependsOn: [frontDoor]
 }
 
 module edge 'edge.bicep' = {

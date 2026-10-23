@@ -200,6 +200,7 @@ jobs:
           printf '%s  %s\n' "$EXPECTED_SHA256" "$release" | sha256sum --check --status
 
       - name: Sign in to Azure using GitHub OIDC
+        id: azure-login
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -335,7 +336,7 @@ jobs:
             --outputs "$RUNNER_TEMP/weather-outputs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
 
       - name: Clear Azure account state
-        if: always()
+        if: always() && steps.azure-login.outcome == 'success'
         run: |
           if command -v az >/dev/null; then
             az logout

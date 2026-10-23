@@ -298,7 +298,10 @@ releases remain approval-gated; no full application deployment has completed.
    identity credential:
    - issuer: `https://token.actions.githubusercontent.com`
    - audience: `api://AzureADTokenExchange`
-   - subject: `repo:OWNER/REPO:environment:production`
+   - subject: exactly match the GitHub assertion for the production environment.
+     This repository issues the ID-bound subject
+     `repo:titirot@222785966/weather-app@1429656546:environment:production`;
+     the older `repo:OWNER/REPO:environment:production` form did not match.
    - Assign Contributor and Role Based Access Control Administrator (or an
      appropriately scoped equivalent) on the target resource group. Use
      constrained role-assignment permissions where feasible.
