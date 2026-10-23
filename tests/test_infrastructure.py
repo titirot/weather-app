@@ -105,6 +105,11 @@ class InfrastructureTests(unittest.TestCase):
         self.assertIn("reference('frontDoor')",
                       self.module_parameters("flask-web-application")["frontDoorProfileName"]["value"])
         web_resources = resources(self.module_template("flask-web-application"))
+        web_template = self.module_template("flask-web-application")
+        self.assertIn("'Microsoft.Resources/deployments', 'web-site'",
+                      web_template["outputs"]["defaultHostname"]["value"])
+        self.assertIn(".outputs.defaultHostname.value",
+                      web_template["outputs"]["defaultHostname"]["value"])
         site = next(r for r in web_resources if r.get("name") == "web-site")
         settings = site["properties"]["parameters"]
         config = settings["siteConfig"]["value"]
