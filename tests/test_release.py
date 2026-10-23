@@ -76,6 +76,21 @@ class BootstrapTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_publishing_token_is_acquired_for_the_current_cloud_without_output(self):
+        with patch.object(release, "az", side_effect=["https://appservice.azure.com", None]) as azure:
+            release.prepare_publishing_token()
+            azure.assert_any_call("cloud", "show", "--query", "endpoints.appServiceResourceId")
+            azure.assert_called_with(
+                "account", "get-access-token", "--resource", "https://appservice.azure.com",
+                output="none",
+            )
+
+    def test_missing_publishing_audience_fails_before_requesting_token(self):
+        with patch.object(release, "az", return_value=None) as azure:
+            with self.assertRaisesRegex(ValueError, "audience"):
+                release.prepare_publishing_token()
+            self.assertEqual(azure.call_count, 1)
+
     def test_publish_failure_still_locks_scm(self):
         failure = subprocess.CalledProcessError(1, "az")
         with patch.object(release, "az", side_effect=[None, failure]), patch.object(

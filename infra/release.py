@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parent
 RULE = "HostedRelease"
 
 
-def az(*args):
+def az(*args, output="json"):
     result = subprocess.run(
-        ["az", *args, "--only-show-errors", "--output", "json"],
+        ["az", *args, "--only-show-errors", "--output", output],
         check=True, text=True, stdout=subprocess.PIPE,
     )
     return json.loads(result.stdout) if result.stdout.strip() else None
@@ -28,6 +28,14 @@ def az(*args):
 
 def load_outputs(path):
     return {key: entry["value"] for key, entry in json.loads(Path(path).read_text()).items()}
+
+
+def prepare_publishing_token():
+    # Exchange the fresh OIDC assertion before lengthy app provisioning expires it.
+    audience = az("cloud", "show", "--query", "endpoints.appServiceResourceId")
+    if not isinstance(audience, str) or not audience.startswith("https://"):
+        raise ValueError("Azure cloud has no valid App Service token audience")
+    az("account", "get-access-token", "--resource", audience, output="none")
 
 
 def runner_ip():
@@ -191,6 +199,7 @@ def main():
             lock_scm(group, outputs)
         return
     address = runner_ip()
+    prepare_publishing_token()
     if args.action == "bootstrap":
         bootstrap(group, outputs, address)
     else:

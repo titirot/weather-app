@@ -2,9 +2,11 @@
 
 ## Status and scope
 
-The full application environment is not deployed. The networking-only bootstrap
-has been deployed to `weatherdemo-rg` in Sweden Central, and Entra identities
-have been configured separately. Networking now incurs Azure charges.
+Infrastructure provisioning has succeeded in `weatherdemo-rg` in Sweden Central,
+including App Service, Front Door, Key Vault and private PostgreSQL 17 with
+zone-redundant HA. Application publishing, private database initialization and
+authenticated cloud acceptance are not yet complete. Entra identities have
+been configured separately. Provisioned resources now incur Azure charges.
 Local development and the Docker database remain unchanged.
 
 The templates provision infrastructure, authentication configuration and runtime
@@ -356,6 +358,10 @@ The workflow binds Secrets to environment variables, and Bicep reads them throug
 `main.bicepparam`. API/sign-in secrets go into Key Vault; App Service uses managed
 identity and Key Vault references. Azure login uses OIDC, while database bootstrap
 acquires a token inside the temporary app using its separate managed identity.
+The workflow refreshes OIDC login before each publishing phase. The release helper
+pre-acquires the App Service audience token before lengthy bootstrap provisioning,
+so publishing does not try to exchange an expired five-minute GitHub assertion.
+Token output is suppressed; no client password or publish profile is needed.
 No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.
