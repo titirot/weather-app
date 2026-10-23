@@ -83,9 +83,8 @@ class InfrastructureTests(unittest.TestCase):
         self.assertIn("administrators", server["properties"]["authConfig"]["activeDirectoryAuth"])
         admins = json.dumps(database["administrators"])
         self.assertIn("databaseAdminGroupObjectId", admins)
-        self.assertIn("databaseBootstrapObjectId", admins)
-        self.assertIn("databaseBootstrapPrincipalName", admins)
-        self.assertIn("ServicePrincipal", admins)
+        self.assertNotIn("ServicePrincipal", admins)
+        self.assertNotIn("bootstrapIdentity", admins)
         self.assertNotIn("runtimeIdentity", admins)
         output_text = json.dumps(self.template.get("outputs", {}))
         self.assertNotIn("openWeatherApiKey", output_text)
@@ -110,6 +109,7 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(rule["ipAddress"], "AzureFrontDoor.Backend")
         self.assertIn("x-azure-fdid", rule["headers"])
         self.assertEqual(config["scmIpSecurityRestrictionsDefaultAction"], "Deny")
+        self.assertEqual(config["scmIpSecurityRestrictions"], [])
         self.assertEqual(config["ftpsState"], "Disabled")
         self.assertEqual(config["minTlsVersion"], "1.2")
         self.assertTrue(settings["httpsOnly"]["value"])
@@ -148,6 +148,24 @@ class InfrastructureTests(unittest.TestCase):
         subnets = vnet["properties"]["parameters"]["subnets"]["value"]
         self.assertTrue(all(s["defaultOutboundAccess"] is False for s in subnets))
         self.assertEqual(len(subnets), 4)
+
+    @unittest.skipUnless(os.environ.get("COMPILED_BOOTSTRAP_APP"), "Run infra/validate.ps1")
+    def test_temporary_bootstrap_is_identity_and_network_isolated(self):
+        template = json.loads(Path(os.environ["COMPILED_BOOTSTRAP_APP"]).read_text())
+        self.assertEqual(template["parameters"]["statusToken"]["type"].lower(), "securestring")
+        site = next(r for r in resources(template) if r["name"] == "temporary-bootstrap-app")
+        params = site["properties"]["parameters"]
+        self.assertIn("planId", params["serverFarmResourceId"]["value"])
+        self.assertIn("identityResourceId", json.dumps(params["managedIdentities"]))
+        self.assertIn("subnetId", params["virtualNetworkSubnetResourceId"]["value"])
+        config = params["siteConfig"]["value"]
+        self.assertEqual(config["ipSecurityRestrictionsDefaultAction"], "Deny")
+        self.assertEqual(config["scmIpSecurityRestrictionsDefaultAction"], "Deny")
+        self.assertIn("runnerIpv4", config["ipSecurityRestrictions"][0]["ipAddress"])
+        self.assertIn("--workers=1", config["appCommandLine"])
+        settings = {s["name"]: s["value"] for s in config["appSettings"]}
+        self.assertNotIn("OPENWEATHER_API_KEY", settings)
+        self.assertNotIn("ENTRA_CLIENT_SECRET", settings)
 
     def test_privacy_conscious_monitoring(self):
         for name in ("postgresql", "global-edge-profile"):

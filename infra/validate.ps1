@@ -9,6 +9,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $templateOutput = Join-Path ([IO.Path]::GetTempPath()) ("weather-template-{0}.json" -f [guid]::NewGuid())
 $parameterOutput = Join-Path ([IO.Path]::GetTempPath()) ("weather-parameters-{0}.json" -f [guid]::NewGuid())
 $bootstrapOutput = Join-Path ([IO.Path]::GetTempPath()) ("weather-network-{0}.json" -f [guid]::NewGuid())
+$bootstrapAppOutput = Join-Path ([IO.Path]::GetTempPath()) ("weather-bootstrap-app-{0}.json" -f [guid]::NewGuid())
 $validationValues = @{
     AZURE_TENANT_ID = '11111111-1111-1111-1111-111111111111'
     ENTRA_CLIENT_ID = '22222222-2222-2222-2222-222222222222'
@@ -16,12 +17,10 @@ $validationValues = @{
     OPENWEATHER_API_KEY = 'validation-placeholder-not-an-api-key'
     DATABASE_ADMIN_GROUP_OBJECT_ID = '33333333-3333-3333-3333-333333333333'
     DATABASE_ADMIN_GROUP_NAME = 'weather-database-admins'
-    DATABASE_BOOTSTRAP_OBJECT_ID = '44444444-4444-4444-4444-444444444444'
-    DATABASE_BOOTSTRAP_PRINCIPAL_NAME = 'weather-release-identity'
-    RELEASE_RUNNER_IPV4 = '203.0.113.10'
     ALERT_EMAIL = 'oncall@example.invalid'
     COMPILED_INFRA_TEMPLATE = $templateOutput
     COMPILED_NETWORK_BOOTSTRAP = $bootstrapOutput
+    COMPILED_BOOTSTRAP_APP = $bootstrapAppOutput
 }
 $previousValues = @{}
 
@@ -31,6 +30,9 @@ try {
 
     & $BicepCommand build (Join-Path $PSScriptRoot 'bootstrap-network.bicep') --outfile $bootstrapOutput
     if ($LASTEXITCODE -ne 0) { throw 'Network bootstrap compilation failed.' }
+
+    & $BicepCommand build (Join-Path $PSScriptRoot 'bootstrap-app.bicep') --outfile $bootstrapAppOutput
+    if ($LASTEXITCODE -ne 0) { throw 'Bootstrap app compilation failed.' }
 
     # Compile the parameter example only with dummy values, never real credentials.
     foreach ($name in $validationValues.Keys) {
@@ -52,7 +54,7 @@ try {
     foreach ($name in $previousValues.Keys) {
         [Environment]::SetEnvironmentVariable($name, $previousValues[$name], 'Process')
     }
-    foreach ($path in @($templateOutput, $parameterOutput, $bootstrapOutput)) {
+    foreach ($path in @($templateOutput, $parameterOutput, $bootstrapOutput, $bootstrapAppOutput)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
     }
 }

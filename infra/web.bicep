@@ -13,7 +13,6 @@ param workspaceId string
 param frontDoorId string
 param tenantId string
 param entraClientId string
-param releaseRunnerIpv4 string
 
 module plan 'br/public:avm/res/web/serverfarm:0.7.0' = {
   name: 'zone-redundant-plan'
@@ -70,9 +69,7 @@ module site 'br/public:avm/res/web/site:0.24.0' = {
       ]
       scmIpSecurityRestrictionsUseMain: false
       scmIpSecurityRestrictionsDefaultAction: 'Deny'
-      scmIpSecurityRestrictions: [
-        { name: 'ReleaseRunner', priority: 100, action: 'Allow', ipAddress: '${releaseRunnerIpv4}/32' }
-      ]
+      scmIpSecurityRestrictions: []
       appSettings: [
         { name: 'AUTH_MODE', value: 'easyauth' }
         { name: 'AZURE_CLIENT_ID', value: identityClientId }
