@@ -378,6 +378,33 @@ No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.
 
+### Application startup versus deployment tracking
+
+The production application uses Gunicorn on App Service Linux. Waitress remains
+the Windows local-development server; a Windows `fcntl` import error from
+Gunicorn does not diagnose an Azure Linux startup failure.
+
+The downloaded App Service logs for the October 23 release show two distinct
+states. Before the first application ZIP was deployed, startup failed with
+`ModuleNotFoundError: No module named 'app'`, with no Oryx manifest or application
+environment present. The ZIP subsequently built successfully at 11:54 UTC, and
+both instances started that deployment successfully at 11:55 and 11:56 UTC.
+Nevertheless, the CLI runtime-status tracker reported both instances failed at
+12:04 UTC. Changing the WSGI server would not address that tracking discrepancy.
+
+Application publishing therefore uses `--async false --track-status false`.
+It still waits for the Kudu build/deployment result and propagates failures;
+only the separate Linux runtime-status tracker is disabled. The following
+workflow smoke-check step remains mandatory: health JSON, application HTML,
+Easy Auth mode, live weather, anonymous personal-API denial and direct-origin
+protection must all pass. Upload/build completion alone is not release success.
+Interactive sign-in and authenticated persistence still require acceptance.
+
+To inspect container logs, use `az webapp log download`. SCM denies all access
+outside publishing, so an operator must approve any temporary diagnostic `/32`
+allow rule and remove it in a `finally` block immediately after retrieval.
+Keep basic publishing authentication disabled and downloaded logs out of Git.
+
 ### First push and operational limitations
 
 After completing the setup, commit **all** related changes (workflow, actionlint
