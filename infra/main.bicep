@@ -233,8 +233,6 @@ module web 'web.bicep' = {
     vaultName: vault.outputs.name
     workspaceId: workspace.outputs.resourceId
     frontDoorProfileName: frontDoor.outputs.name
-    tenantId: tenantId
-    entraClientId: entraClientId
   }
 }
 
@@ -246,6 +244,40 @@ module edge 'edge.bicep' = {
     endpointName: '${prefix}-edge'
     originHost: web.outputs.defaultHostname
     tags: tags
+  }
+}
+
+resource webApp 'Microsoft.Web/sites@2025-03-01' existing = {
+  name: '${prefix}-web'
+}
+
+// Configure after edge creation so cookie-authenticated POSTs trust its exact origin.
+resource authentication 'Microsoft.Web/sites/config@2025-03-01' = {
+  parent: webApp
+  name: 'authsettingsV2'
+  properties: {
+    platform: { enabled: true, runtimeVersion: '~1' }
+    globalValidation: { requireAuthentication: false, unauthenticatedClientAction: 'AllowAnonymous' }
+    httpSettings: {
+      requireHttps: true
+      forwardProxy: { convention: 'Standard' }
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: entraClientId
+          clientSecretSettingName: 'ENTRA_CLIENT_SECRET'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${tenantId}/v2.0'
+        }
+        validation: { allowedAudiences: [entraClientId, 'api://${entraClientId}'] }
+      }
+    }
+    login: {
+      allowedExternalRedirectUrls: ['https://${edge.outputs.hostname}']
+      tokenStore: { enabled: false }
+      preserveUrlFragmentsForLogins: false
+    }
   }
 }
 

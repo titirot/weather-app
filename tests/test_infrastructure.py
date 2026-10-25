@@ -126,11 +126,27 @@ class InfrastructureTests(unittest.TestCase):
         self.assertEqual(app_settings["AUTH_MODE"], "easyauth")
         self.assertEqual(app_settings["PGSSLMODE"], "verify-full")
         self.assertIn("@Microsoft.KeyVault", app_settings["OPENWEATHER_API_KEY"])
-        auth = next(r for r in web_resources if r["type"] == "Microsoft.Web/sites/config"
+        auth = next(r for r in resources(self.template) if r["type"] == "Microsoft.Web/sites/config"
                     and "authsettingsV2" in r["name"])["properties"]
         self.assertTrue(auth["platform"]["enabled"])
         self.assertEqual(auth["httpSettings"]["forwardProxy"]["convention"], "Standard")
         self.assertFalse(auth["login"]["tokenStore"]["enabled"])
+
+    def test_cookie_authenticated_posts_approve_only_the_front_door_origin(self):
+        auth = next(r for r in resources(self.template)
+                    if r["type"] == "Microsoft.Web/sites/config"
+                    and "authsettingsV2" in r["name"])
+        properties = auth["properties"]
+        self.assertEqual(properties["login"]["allowedExternalRedirectUrls"],
+                         [self.template["outputs"]["applicationUrl"]["value"]])
+        self.assertIn("edge", " ".join(auth["dependsOn"]))
+        self.assertIn("web", " ".join(self.modules["edge-routing-and-waf"]["dependsOn"]))
+        self.assertTrue(properties["httpSettings"]["requireHttps"])
+        self.assertTrue(properties["identityProviders"]["azureActiveDirectory"]["enabled"])
+        self.assertNotIn("cors", json.dumps(self.module_parameters("flask-web-application")))
+        self.assertFalse(any(r["type"] == "Microsoft.Web/sites/config"
+                             and "authsettingsV2" in r["name"]
+                             for r in resources(self.module_template("flask-web-application"))))
 
     def test_edge_does_not_cache_personal_responses(self):
         edge_resources = resources(self.module_template("edge-routing-and-waf"))

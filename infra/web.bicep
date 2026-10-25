@@ -11,8 +11,6 @@ param databaseUser string
 param vaultName string
 param workspaceId string
 param frontDoorProfileName string
-param tenantId string
-param entraClientId string
 
 // Resolve only inside this module, after the parent has created the profile.
 resource edgeProfile 'Microsoft.Cdn/profiles@2025-06-01' existing = {
@@ -110,36 +108,6 @@ module site 'br/public:avm/res/web/site:0.24.0' = {
 
 resource webApp 'Microsoft.Web/sites@2025-03-01' existing = {
   name: '${prefix}-web'
-}
-
-// Easy Auth is a child configuration; no independent AVM exists for this setting.
-resource authentication 'Microsoft.Web/sites/config@2025-03-01' = {
-  parent: webApp
-  name: 'authsettingsV2'
-  properties: {
-    platform: { enabled: true, runtimeVersion: '~1' }
-    globalValidation: { requireAuthentication: false, unauthenticatedClientAction: 'AllowAnonymous' }
-    httpSettings: {
-      requireHttps: true
-      forwardProxy: { convention: 'Standard' }
-    }
-    identityProviders: {
-      azureActiveDirectory: {
-        enabled: true
-        registration: {
-          clientId: entraClientId
-          clientSecretSettingName: 'ENTRA_CLIENT_SECRET'
-          openIdIssuer: '${environment().authentication.loginEndpoint}${tenantId}/v2.0'
-        }
-        validation: { allowedAudiences: [entraClientId, 'api://${entraClientId}'] }
-      }
-    }
-    login: {
-      tokenStore: { enabled: false }
-      preserveUrlFragmentsForLogins: false
-    }
-  }
-  dependsOn: [site]
 }
 
 resource privacyLogs 'Microsoft.Web/sites/config@2025-03-01' = {
