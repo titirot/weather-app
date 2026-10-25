@@ -1,6 +1,7 @@
 import io
 import logging
 import unittest
+from xml.etree import ElementTree
 from unittest.mock import Mock, patch
 
 import requests
@@ -35,6 +36,21 @@ class WeatherTests(unittest.TestCase):
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         return response
+
+    def test_custom_favicon_is_linked_and_served_as_svg(self):
+        with self.client.get("/") as page:
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(
+                '<link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">',
+                page.get_data(as_text=True),
+            )
+        with self.client.get("/static/favicon.svg") as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, "image/svg+xml")
+            icon = ElementTree.fromstring(response.data)
+            self.assertEqual(icon.tag, "{http://www.w3.org/2000/svg}svg")
+            self.assertEqual(icon.attrib["viewBox"], "0 0 64 64")
+            self.assertNotIn(b"<script", response.data)
 
     def successful_responses(self):
         return [

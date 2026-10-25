@@ -187,6 +187,31 @@ class ReleaseTests(unittest.TestCase):
                 release.publish("group", {"webAppName": "web"}, "203.0.113.1", "app.zip")
             lock.assert_called_once_with("group", {"webAppName": "web"})
 
+    def test_publish_waits_for_build_without_using_runtime_status_tracker(self):
+        outputs = {"webAppName": "web"}
+        with patch.object(release, "az") as azure, patch.object(
+            release, "lock_scm"
+        ) as lock, patch("builtins.print") as report:
+            release.publish("group", outputs, "203.0.113.1", "app.zip")
+            self.assertEqual(azure.call_count, 2)
+            azure.assert_called_with(
+                "webapp", "deploy", "--resource-group", "group", "--name", "web",
+                "--src-path", "app.zip", "--type", "zip", "--restart", "true",
+                "--async", "false", "--track-status", "false",
+            )
+            lock.assert_called_once_with("group", outputs)
+            self.assertIn("smoke checks must still pass", report.call_args.args[0])
+
+    def test_failed_build_does_not_report_application_deployment_completed(self):
+        failure = subprocess.CalledProcessError(1, "az")
+        with patch.object(release, "az", side_effect=[None, failure]), patch.object(
+            release, "lock_scm"
+        ) as lock, patch("builtins.print") as report:
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.publish("group", {"webAppName": "web"}, "203.0.113.1", "app.zip")
+            report.assert_not_called()
+            lock.assert_called_once()
+
     def test_lock_scm_rejects_unexpected_allow_rules(self):
         rules = {"scmIpSecurityRestrictions": [{"name": "unexpected", "action": "Allow"}],
                  "scmIpSecurityRestrictionsDefaultAction": "Deny"}

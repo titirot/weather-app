@@ -190,7 +190,13 @@ def publish(group, outputs, address, archive):
            "--name", name, "--rule-name", RULE, "--action", "Allow",
            "--ip-address", address + "/32", "--priority", "100", "--scm-site", "true")
         az("webapp", "deploy", "--resource-group", group, "--name", name,
-           "--src-path", archive, "--type", "zip", "--restart", "true", "--track-status", "true")
+           "--src-path", archive, "--type", "zip", "--restart", "true",
+           "--async", "false", "--track-status", "false")
+        print(
+            "Application build and ZIP deployment completed. "
+            "Public application smoke checks must still pass before release acceptance.",
+            flush=True,
+        )
     finally:
         lock_scm(group, outputs)
 

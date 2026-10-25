@@ -42,6 +42,8 @@ The daily forecast stays in one horizontal row (scrollable on small screens).
 The hourly forecast supports touch, keyboard scrolling and navigation arrows;
 dates and times are explicitly formatted in English. Privacy information and
 the account-data deletion action are in the footer.
+The browser tab uses a bundled sun-and-cloud SVG favicon, served from the
+application without an external image service.
 
 Selecting a saved city requests `/api/weather?city=...&refresh=true`, bypassing
 the server's 10-minute cache and updating it with a fresh OpenWeather response.
