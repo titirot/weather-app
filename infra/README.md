@@ -378,6 +378,28 @@ No database token is sent to GitHub. No secret is embedded in
 the release ZIP or intentionally uploaded as an artifact. Do not enable shell
 tracing, Azure CLI `--debug` or secret dumps when diagnosing failures.
 
+### Cookie-authenticated saves behind Front Door
+
+Easy Auth applies its own CSRF validation before Flask sees a browser POST
+authenticated by a session cookie. Without the public Front Door origin in
+`login.allowedExternalRedirectUrls`, it can return a non-JSON HTTP 403 even when
+sign-in and GET requests work. `forwardProxy: Standard` alone does not approve
+that origin. See Microsoft's [Easy Auth CSRF documentation](https://learn.microsoft.com/azure/app-service/overview-authentication-authorization#mitigation-of-cross-site-request-forgery).
+
+The authentication child resource is configured in `main.bicep` after the site
+and Front Door routing module. Its redirect allowlist contains only the exact
+HTTPS origin returned by Front Door, with no wildcard, additional domain, or
+callback path. This avoids a site/edge dependency cycle while approving the
+actual browser origin. Flask's custom-header and Fetch Metadata CSRF checks,
+Easy Auth, restricted origin ingress, and the no-CORS policy remain in place.
+The compiled-ARM contract test verifies the origin and resource dependencies.
+Verify authenticated save, list, update and delete after deployment; an
+anonymous health check does not exercise this cookie-authenticated path.
+On October 25, applying this exact-origin setting to production resolved the
+reported HTTP 403; the user confirmed a forecast saved successfully and
+persisted after a page refresh. Multi-user isolation and deletion still need
+their separate authenticated acceptance checks.
+
 ### Application startup versus deployment tracking
 
 The production application uses Gunicorn on App Service Linux. Waitress remains
